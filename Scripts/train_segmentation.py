@@ -578,6 +578,9 @@ def main():
             model, val_loader, device, num_classes=n_classes, show_progress=False
         )
 
+        print(f"Mean Train IoU: {train_iou:.4f}")
+        print(f"Mean Val IoU: {val_iou:.4f}")
+
         # Store history
         epoch_train_loss = np.mean(train_losses)
         epoch_val_loss = np.mean(val_losses)

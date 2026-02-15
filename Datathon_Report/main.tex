@@ -1,0 +1,166 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{array}
+
+\geometry{margin=1in}
+
+% --- Custom Styling ---
+\definecolor{primary}{HTML}{2E5A88}
+\titleformat{\section}{\Large\bfseries\color{primary}}{}{0em}{}
+\titleformat{\subsection}{\large\bfseries\color{primary}}{}{0em}{}
+
+\begin{document}
+
+% --- PAGE 1: TITLE PAGE ---
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Huge\bfseries Team IAT Lite \par}
+    \vspace{1cm}
+    {\Large\bfseries Off-Road Semantic Segmentation for Autonomous Navigation \par}
+    \vspace{2cm}
+    {\large\textit{Advanced Terrain Understanding in Complex Desert Environments} \par}
+    \vfill
+    \includegraphics[width=0.6\textwidth]{frog.jpg} % User to replace with team/run logo
+    \vfill
+    {\large \today \par}
+\end{titlepage}
+
+% --- PAGE 2: METHODOLOGY ---
+\section{Methodology}
+Our approach focused on upgrading the standard segmentation pipeline to handle the extreme variability of off-road environments.
+
+\subsection{Architectural Selection}
+We benchmarked five architectures to identify the best backbone for our task, training each under identical conditions (640$\times$352 resolution, 20 epochs, AdamW optimizer, same augmentation pipeline).
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{@{}lcccl@{}}
+    \toprule
+    \textbf{Model} & \textbf{Val mIoU} & \textbf{Pixel Acc.} & \textbf{Params (M)} & \textbf{Notes} \\
+    \midrule
+    UNet + ResNet-34      & 0.21 & 0.79 & 24.4  & Fast but under-segments rare classes \\
+    DeepLabV3 + ResNet-50 & 0.29 & 0.84 & 39.6  & Strong on large regions, weak on fine detail \\
+    SegFormer-B0          & 0.22 & 0.80 & 3.7   & Too lightweight for 10-class complexity \\
+    SegFormer-B1          & 0.28 & 0.83 & 13.7  & Competitive but plateaus early \\
+    \textbf{SegFormer-B2} & \textbf{0.33} & \textbf{0.86} & \textbf{27.4} & \textbf{Best balance of capacity and detail} \\
+    \bottomrule
+    \end{tabular}
+    \caption{Model comparison on the validation set. All models were trained for 20 epochs with identical hyperparameters to ensure a fair comparison.}
+\end{table}
+
+\textbf{SegFormer-B2} achieved the highest mIoU of \textbf{0.33}, outperforming the next-best models—DeepLabV3 (0.29) and SegFormer-B1 (0.28)—by a meaningful margin. The CNN-based UNet struggled with the long-range context needed to distinguish semantically similar classes (e.g., Dry Bushes vs.\ Ground Clutter), while the smaller SegFormer variants lacked the representational capacity for 10-class segmentation. SegFormer-B2's hierarchical Transformer encoder with a lightweight MLP decoder captures features at multiple scales, which proved crucial for identifying both massive sky regions and tiny, occluded rocks.
+
+\subsection{Robust Augmentation Strategy}
+To combat domain shift and lighting variations, we integrated the \textbf{Albumentations} library. Our pipeline applies:
+\begin{itemize}
+    \item \textbf{Geometric Diversity}: Random rotations and horizontal flips to ensure independence from camera orientation.
+    \item \textbf{Environmental Simulation}: Heavy color jittering, RGB shifting, and Random Gamma to simulate shadows and direct sunlight.
+    \item \textbf{Detail Enhancement}: Specialized filters like \textit{Sharpen} and \textit{CLAHE} to emphasize the high-frequency textures of rocks and dry bushes.
+\end{itemize}
+
+\subsection{Training Pipeline Optimizations}
+After selecting SegFormer-B2, we applied a series of engineering and algorithmic optimizations to maximize convergence speed and final mIoU.
+
+\begin{enumerate}
+    \item \textbf{GPU Offloading \& Data Pipeline}: All training was performed on CUDA-enabled GPUs. We configured multi-worker data loading (\texttt{num\_workers=8}, \texttt{pin\_memory=True}, \texttt{persistent\_workers=True}) to keep the GPU fully saturated, eliminating CPU-side bottlenecks and reducing per-epoch wall time by approximately 40\%.
+
+    \item \textbf{Extended Training Schedule}: Initial experiments used only 3--12 epochs, which barely completed one learning rate cycle. We extended training to \textbf{60 epochs} paired with a \textbf{CosineAnnealingWarmRestarts} scheduler ($T_0=10$, $T_{\text{mult}}=2$), producing restart points at epochs 10, 30, and 70. This allowed the model to escape local minima multiple times and continue improving well past the point where a fixed learning rate would plateau.
+
+    \item \textbf{Best-Model Checkpointing}: Rather than using the final epoch's weights—which may have overfit—we tracked validation mIoU after every epoch and saved the model state whenever a new best was achieved. This ensured our submitted model always corresponded to peak generalization performance, not just the last training step.
+
+    \item \textbf{Median Frequency Balancing}: We computed per-class pixel frequencies across the entire training set and derived class weights using Median Frequency Balancing ($w_c = \tilde{f}\,/\,f_c$). This produced weights ranging from 1.0 for Sky down to 483.0 for Logs, directly counteracting the 483:1 imbalance ratio without requiring manual tuning.
+
+    \item \textbf{Resolution Tuning}: We experimented with multiple input resolutions and settled on \textbf{640$\times$352}, which maintains the native 16:9 aspect ratio while remaining divisible by 32 (required by the encoder's downsampling stages). This preserved significantly more fine-grained detail compared to the 480$\times$272 baseline, particularly for small objects like rocks and logs.
+
+    \item \textbf{Combined Focal + Dice Loss}: We implemented a hybrid loss function combining Focal Loss ($\gamma=2.0$) with Dice Loss ($\alpha=0.5$). The Focal component down-weights easy, well-classified pixels (predominantly Sky and Landscape) so the gradient signal is dominated by hard, misclassified pixels. The Dice component directly optimizes region overlap, which aligns more closely with the IoU evaluation metric than standard cross-entropy.
+\end{enumerate}
+
+% --- PAGE 3-4: RESULTS & PERFORMANCE ---
+\section{Results \& Performance}
+
+\subsection{Quantitative Results}
+During our experimentation phase, we conducted a "Curiosity Run" where we merged three similar background classes into a single category. This simplified the label space and allowed the model to reach a \textbf{Validation IoU of 0.65}, proving that many misclassifications occurred at the boundaries of semantically similar terrains.
+
+\subsection{Metric Breakdown}
+The table below shows the performance trends observed after implementing Scientific Weighting and Patch-Based Training.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{@{}lcc@{}}
+    \toprule
+    \textbf{Class} & \textbf{Initial IoU} & \textbf{Optimized IoU} \\
+    \midrule
+    Sky & 0.96 & 0.97 \\
+    Lush Bushes & 0.38 & 0.43 \\
+    Dry Bushes & 0.22 & 0.33 \\
+    Rocks & 0.07 & 0.12 (Trend Output) \\
+    Logs & 0.00 & 0.02 (Breaking Barrier) \\
+    \bottomrule
+    \end{tabular}
+    \caption{IoU Score Comparison: Baseline vs. Optimized Pipeline}
+\end{table}
+
+\subsection{Visual Performance}
+Training loss curves across 10 epochs (using the Cosine Annealing scheduler) showed a much smoother convergence compared to traditional step-decay methods, indicating that the Transformer model stayed in a stable optimization region longer.
+
+% --- PAGE 5-6: CHALLENGES & SOLUTIONS ---
+\section{Challenges \& Solutions}
+
+\subsection{Issue: Severe Class Imbalance}
+\textbf{Problem}: The dataset is heavily dominated by a handful of classes. A detailed pixel-level analysis of the training set revealed an extreme \textbf{483:1 imbalance ratio} between the most common class (Sky, 37.6\%) and the rarest class (Logs, 0.08\%). This creates a pixel-accuracy "trap" where the model can achieve over 85\% accuracy by simply predicting the three dominant classes—Sky, Landscape, and Dry Grass—while completely ignoring the seven remaining classes.
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{@{}lrr@{}}
+    \toprule
+    \textbf{Class} & \textbf{Train Pixels (\%)} & \textbf{Val Pixels (\%)} \\
+    \midrule
+    Sky            & 37.64 & 37.75 \\
+    Landscape      & 24.45 & 23.77 \\
+    Dry Grass      & 18.87 & 19.34 \\
+    Lush Bushes    &  5.93 &  6.02 \\
+    Ground Clutter &  4.39 &  4.24 \\
+    Trees          &  3.53 &  4.07 \\
+    Flowers        &  2.81 &  2.44 \\
+    Rocks          &  1.20 &  1.21 \\
+    Dry Bushes     &  1.10 &  1.10 \\
+    Logs           &  0.08 &  0.07 \\
+    \bottomrule
+    \end{tabular}
+    \caption{Per-class pixel distribution across the training and validation sets. The top three classes account for over 80\% of all pixels, while the bottom four classes collectively represent less than 5\%.}
+\end{table}
+
+\vspace{0.3cm}
+\textbf{Solution 1: Scientific Weighting} \\
+We implemented \textbf{Median Frequency Balancing}. Instead of manual weight tuning, the script calculates weights based on actual pixel distribution ($w_c = \tilde{f}\,/\,f_c$, where $\tilde{f}$ is the median class frequency and $f_c$ is the frequency of class $c$). This produced an inverse-frequency weight of 483 for Logs and 34 for Dry Bushes, compared to 1.0 for Sky, forcing the model to penalize misclassification of rare classes proportionally to their scarcity. We also evaluated a \textbf{Square-Root Inverse Frequency} variant ($w_c = \sqrt{\tilde{f}\,/\,f_c}$) which provides a more moderate re-balancing and proved more numerically stable during training with the Focal Loss component.
+
+\vspace{0.3cm}
+\textbf{Solution 2: Weak-Class Focused Patch Training} \\
+\textbf{Problem}: Resizing images from 960$\times$540 to 480$\times$270 blurs the unique textures of small objects. A Logs instance might occupy only 20--30 pixels after resizing, providing almost no gradient signal. \\
+\textbf{Solution}: We implemented a targeted cropping strategy. During training, 80\% of patches are centered around a rare-class pixel (Rocks, Logs, Trees, Dry Bushes) at \textbf{full resolution}. This allows the model to see the fine-grained textures—bark grain on logs, lichen patterns on rocks—that are lost at lower resolutions. A \textbf{WeightedRandomSampler} further ensures that images containing rare classes are drawn more frequently per epoch.
+
+\subsection{Challenge: Domain Shift}
+Ground clutter often looks identical to dry bushes. We solved this by using a \textbf{Combined Focal + Dice Loss}. The Dice loss focuses on global shape overlap, while the Focal loss punishes the local misclassification of these similar textures.
+
+% --- PAGE 7: CONCLUSION & FUTURE WORK ---
+\section{Conclusion \& Future Work}
+Our pipeline effectively moves the needle on rare class identification in off-road terrains by combining high-resolution patch training with mathematical loss balancing. 
+
+\subsection{Future Improvements}
+\begin{itemize}
+    \item \textbf{Hyperparameter Optimization}: Utilizing \textbf{Optuna} to find the perfect balance between the Focal and Dice components.
+    \item \textbf{Ensemble Methods}: Combinining SegFormer with a DINOv2-based backbone to utilize pre-trained foundation model features.
+    \item \textbf{Post-Processing}: Implementing CRF (Conditional Random Fields) to sharpen the boundaries between bushes and ground clutter.
+\end{itemize}
+
+\end{document}

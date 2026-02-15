@@ -2,6 +2,8 @@
 
 SegFormer-B2 based semantic segmentation for 10 off-road terrain classes.
 
+We have also attached our model, so you can go straight to testing after you install the dependencies with pip stated below
+
 ## Requirements
 
 ```
